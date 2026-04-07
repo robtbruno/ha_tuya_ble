@@ -32,6 +32,9 @@
     "button": {
       "push": {
         "name": "Push"
+      },
+      "manual_lock": {
+        "name": "Manual Lock"
       }
     },
     "number": {
@@ -64,6 +67,12 @@
       },
       "countdown_duration": {
         "name": "Irrigation duration"
+      },
+      "countdown_duration_z1": {
+        "name": "Irrigation duration - Zone 1"
+      },
+      "countdown_duration_z2": {
+        "name": "Irrigation duration - Zone 2"
       }
     },
     "select": {
@@ -156,11 +165,17 @@
       },
       "time_left": {
           "name": "Remaining irrigation time"
+      },
+      "use_time_z1": {
+          "name": "Last irrigation time - Zone 1"
+      },
+      "use_time_z2": {
+          "name": "Last irrigation time - Zone 2"
       }
     },
     "switch": {
       "programming_mode": {
-        "name": "Programming Mode" 
+        "name": "Programming Mode"
       },
       "programming_switch": {
         "name": "Programming Switch"
@@ -194,7 +209,7 @@
       },
       "program_repeat_forever": {
         "name": "Repeat forever"
-      },      
+      },
       "reverse_positions": {
         "name": "Reverse positions"
       },
@@ -203,10 +218,16 @@
       },
       "lock_motor_state": {
           "name": "Motor State"
-      },            
+      },
       "water_valve": {
           "name": "Irrigation valve"
-      }    
+      },
+      "water_valve_z1": {
+          "name": "Irrigation valve - Zone 1"
+      },
+      "water_valve_z2": {
+          "name": "Irrigation valve - Zone 2"
+      }
     },
     "text": {
       "program": {

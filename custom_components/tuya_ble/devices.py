@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
+from typing import Any
 import logging
 from homeassistant.const import CONF_ADDRESS, CONF_DEVICE_ID
 
@@ -17,7 +18,10 @@ from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
 )
+import datetime
 
+from homeassistant.components.bluetooth import BluetoothScanningMode
+from homeassistant.components.bluetooth.passive_update_coordinator import PassiveBluetoothCoordinatorEntity, PassiveBluetoothDataUpdateCoordinator
 from home_assistant_bluetooth import BluetoothServiceInfoBleak
 from .tuya_ble import (
     AbstaractTuyaBLEDeviceManager,
@@ -48,21 +52,28 @@ class TuyaBLEFingerbotInfo:
     manual_control: int = 0
     program: int = 0
 
+@dataclass
+class TuyaBLELockInfo:
+    alarm_lock: int
+    unlock_ble: int
+    unlock_fingerprint: int
+    unlock_password: int
 
 @dataclass
 class TuyaBLEProductInfo:
     name: str
     manufacturer: str = DEVICE_DEF_MANUFACTURER
     fingerbot: TuyaBLEFingerbotInfo | None = None
+    lock: TuyaBLELockInfo | None = None
 
 
-class TuyaBLEEntity(CoordinatorEntity):
+class TuyaBLEEntity(PassiveBluetoothCoordinatorEntity):
     """Tuya BLE base entity."""
 
     def __init__(
         self,
         hass: HomeAssistant,
-        coordinator: TuyaBLECoordinator,
+        coordinator: TuyaBLEPassiveCoordinator,
         device: TuyaBLEDevice,
         product: TuyaBLEProductInfo,
         description: EntityDescription,
@@ -85,7 +96,7 @@ class TuyaBLEEntity(CoordinatorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self._coordinator.connected
+        return self.coordinator.available
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -93,7 +104,7 @@ class TuyaBLEEntity(CoordinatorEntity):
         self.async_write_ha_state()
 
 
-class TuyaBLECoordinator(DataUpdateCoordinator[None]):
+class TuyaBLECoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Data coordinator for receiving Tuya BLE updates."""
 
     def __init__(self, hass: HomeAssistant, device: TuyaBLEDevice) -> None:
@@ -124,11 +135,13 @@ class TuyaBLECoordinator(DataUpdateCoordinator[None]):
 
     @callback
     def _async_handle_update(self, updates: list[TuyaBLEDataPoint]) -> None:
-        """Just trigger the callbacks."""
         self._async_handle_connect()
-        self.async_set_updated_data(None)
+        self.async_update_listeners()
         info = get_device_product_info(self._device)
-        if info and info.fingerbot and info.fingerbot.manual_control != 0:
+        if not info:
+            return
+        # Fingerbot events
+        if info.fingerbot and info.fingerbot.manual_control != 0:
             for update in updates:
                 if update.id == info.fingerbot.switch and update.changed_by_device:
                     self.hass.bus.fire(
@@ -138,9 +151,54 @@ class TuyaBLECoordinator(DataUpdateCoordinator[None]):
                             CONF_DEVICE_ID: self._device.device_id,
                         },
                     )
+        # Lock events
+        if info.lock:
+            for update in updates:
+                if not update.changed_by_device:
+                    continue
+                if update.id == info.lock.alarm_lock:
+                    self.hass.bus.fire(
+                        f"{DOMAIN}_lock_alarm_event",
+                        {
+                            CONF_ADDRESS: self._device.address,
+                            CONF_DEVICE_ID: self._device.device_id,
+                            "event": "alarm_lock",
+                            "value": update.value,
+                        },
+                    )
+                elif update.id == info.lock.unlock_ble:
+                    self.hass.bus.fire(
+                        f"{DOMAIN}_lock_unlock_ble_event",
+                        {
+                            CONF_ADDRESS: self._device.address,
+                            CONF_DEVICE_ID: self._device.device_id,
+                            "event": "unlock_ble",
+                            "value": update.value,
+                        },
+                    )
+                elif update.id == info.lock.unlock_fingerprint:
+                    self.hass.bus.fire(
+                        f"{DOMAIN}_lock_unlock_fingerprint_event",
+                        {
+                            CONF_ADDRESS: self._device.address,
+                            CONF_DEVICE_ID: self._device.device_id,
+                            "event": "unlock_fingerprint",
+                            "value": update.value,
+                        },
+                    )
+                elif update.id == info.lock.unlock_password:
+                    self.hass.bus.fire(
+                        f"{DOMAIN}_lock_unlock_password_event",
+                        {
+                            CONF_ADDRESS: self._device.address,
+                            CONF_DEVICE_ID: self._device.device_id,
+                            "event": "unlock_password",
+                            "value": update.value,
+                        },
+                    )
 
     @callback
-    def _set_disconnected(self, _: None) -> None:
+    def _set_disconnected(self, _: "datetime.datetime") -> None:
         """Invoke the idle timeout callback, called when the alarm fires."""
         self._disconnected = True
         self._unsub_disconnect = None
@@ -156,6 +214,103 @@ class TuyaBLECoordinator(DataUpdateCoordinator[None]):
             )
 
 
+class TuyaBLEPassiveCoordinator(PassiveBluetoothDataUpdateCoordinator):
+    """Data coordinator для получения обновлений Tuya BLE через пассивный Bluetooth."""
+    def __init__(self, hass: HomeAssistant, logger: logging.Logger, address: str, device: TuyaBLEDevice):
+        super().__init__(hass, logger, address, BluetoothScanningMode.ACTIVE, connectable=True)
+        self._device = device
+        self._disconnected: bool = True
+        self._unsub_disconnect: CALLBACK_TYPE | None = None
+        device.register_connected_callback(self._async_handle_connect)
+        device.register_callback(self._async_handle_update)
+        device.register_disconnected_callback(self._async_handle_disconnect)
+
+    @property
+    def connected(self) -> bool:
+        return not self._disconnected
+
+    @callback
+    def _async_handle_connect(self) -> None:
+        if self._unsub_disconnect is not None:
+            self._unsub_disconnect()
+        if self._disconnected:
+            self._disconnected = False
+            self.async_update_listeners()
+
+    @callback
+    def _async_handle_update(self, updates: list[TuyaBLEDataPoint]) -> None:
+        self._async_handle_connect()
+        self.async_update_listeners()
+        info = get_device_product_info(self._device)
+        if info and info.fingerbot and info.fingerbot.manual_control != 0:
+            for update in updates:
+                if update.id == info.fingerbot.switch and update.changed_by_device:
+                    self.hass.bus.fire(
+                        FINGERBOT_BUTTON_EVENT,
+                        {
+                            CONF_ADDRESS: self._device.address,
+                            CONF_DEVICE_ID: self._device.device_id,
+                        },
+                    )
+        if info and info.lock:
+            for update in updates:
+                if update.changed_by_device:
+                    if update.id == info.lock.alarm_lock:
+                        self.hass.bus.fire(
+                            f"{DOMAIN}_lock_alarm_event",
+                            {
+                                CONF_ADDRESS: self._device.address,
+                                CONF_DEVICE_ID: self._device.device_id,
+                                "event": "alarm_lock",
+                                "value": update.value,
+                            },
+                        )
+                    elif update.id == info.lock.unlock_ble:
+                        self.hass.bus.fire(
+                            f"{DOMAIN}_lock_unlock_ble_event",
+                            {
+                                CONF_ADDRESS: self._device.address,
+                                CONF_DEVICE_ID: self._device.device_id,
+                                "event": "unlock_ble",
+                                "value": update.value,
+                            },
+                        )
+                    elif update.id == info.lock.unlock_fingerprint:
+                        self.hass.bus.fire(
+                            f"{DOMAIN}_lock_unlock_fingerprint_event",
+                            {
+                                CONF_ADDRESS: self._device.address,
+                                CONF_DEVICE_ID: self._device.device_id,
+                                "event": "unlock_fingerprint",
+                                "value": update.value,
+                            },
+                        )
+                    elif update.id == info.lock.unlock_password:
+                        self.hass.bus.fire(
+                            f"{DOMAIN}_lock_unlock_password_event",
+                            {
+                                CONF_ADDRESS: self._device.address,
+                                CONF_DEVICE_ID: self._device.device_id,
+                                "event": "unlock_password",
+                                "value": update.value,
+                            },
+                        )
+
+    @callback
+    def _set_disconnected(self, _: "datetime.datetime") -> None:
+        self._disconnected = True
+        self._unsub_disconnect = None
+        self.async_update_listeners()
+
+    @callback
+    def _async_handle_disconnect(self) -> None:
+        if self._unsub_disconnect is None:
+            delay: float = SET_DISCONNECTED_DELAY
+            self._unsub_disconnect = async_call_later(
+                self.hass, delay, self._set_disconnected
+            )
+
+
 @dataclass
 class TuyaBLEData:
     """Data for the Tuya BLE integration."""
@@ -164,7 +319,7 @@ class TuyaBLEData:
     device: TuyaBLEDevice
     product: TuyaBLEProductInfo
     manager: HASSTuyaBLEDeviceManager
-    coordinator: TuyaBLECoordinator
+    coordinator: TuyaBLEPassiveCoordinator
 
 
 @dataclass
@@ -186,10 +341,20 @@ devices_database: dict[str, TuyaBLECategoryInfo] = {
             **dict.fromkeys(
                 [
                     "ludzroix",
-                    "isk2p555"
+                    "isk2p555",
+                    "yy2bmcoh",
                 ],
                     TuyaBLEProductInfo(  # device product_id
                     name="Smart Lock",
+                ),
+            ),
+            "mqc2hevy": TuyaBLEProductInfo(  # device product_id
+                name="Smart Lock",
+                lock=TuyaBLELockInfo(
+                    alarm_lock=21,
+                    unlock_ble=19,
+                    unlock_fingerprint=12,
+                    unlock_password=13,
                 ),
             ),
         },
@@ -222,7 +387,7 @@ devices_database: dict[str, TuyaBLECategoryInfo] = {
                 [
                     "blliqpsj",
                     "ndvkgsrm",
-                    "yiihr7zh", 
+                    "yiihr7zh",
                     "neq16kgd"
                 ],  # device product_ids
                 TuyaBLEProductInfo(
@@ -268,10 +433,10 @@ devices_database: dict[str, TuyaBLECategoryInfo] = {
         products={
             **dict.fromkeys(
             [
-            "drlajpqc", 
+            "drlajpqc",
             "nhj2j7su",
             ],  # device product_id
-            TuyaBLEProductInfo(  
+            TuyaBLEProductInfo(
                 name="Thermostatic Radiator Valve",
                 ),
             ),
@@ -292,11 +457,26 @@ devices_database: dict[str, TuyaBLECategoryInfo] = {
             ),
         },
     ),
+    "jtmspro": TuyaBLECategoryInfo(
+        products={
+            "akwn32dw": TuyaBLEProductInfo(
+                name="Drawer Smart Lock",
+            ),
+            "xqeob8h6": TuyaBLEProductInfo(
+                name="S1-TY-BLE-PRO",
+            ),
+        },
+    ),
     "ggq": TuyaBLECategoryInfo(
         products={
-            "6pahkcau":  # device product_id
-            TuyaBLEProductInfo(
-                name="Irrigation computer",
+            **dict.fromkeys(
+                [
+                "6pahkcau",
+                "hfgdqhho",
+                ],  # device product_id
+                TuyaBLEProductInfo(
+                    name="Irrigation computer",
+                ),
             ),
         },
     ),

@@ -8,27 +8,26 @@ from typing import Any, Callable
 
 from homeassistant.components.number import (
     NumberEntityDescription,
-    NumberEntity,
+    NumberMode,
 )
-from homeassistant.components.number.const import NumberDeviceClass, NumberMode
+from homeassistant.components.number import NumberEntity as BaseNumberEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONCENTRATION_PARTS_PER_MILLION,
     PERCENTAGE,
-    TIME_MINUTES,
-    TIME_SECONDS,
-    VOLUME_MILLILITERS,
+    UnitOfTime,
+    UnitOfVolume,
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
-
+from homeassistant.components.bluetooth.passive_update_coordinator import PassiveBluetoothDataUpdateCoordinator
+from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo, TuyaBLEPassiveCoordinator
 from .const import DOMAIN
-from .devices import TuyaBLEData, TuyaBLEEntity, TuyaBLEProductInfo
 from .tuya_ble import TuyaBLEDataPointType, TuyaBLEDevice
+from homeassistant.components.number.const import NumberDeviceClass
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -197,7 +196,7 @@ class TuyaBLEHoldTimeDescription(NumberEntityDescription):
     icon: str = "mdi:timer"
     native_max_value: float = 10
     native_min_value: float = 0
-    native_unit_of_measurement: str = TIME_SECONDS
+    native_unit_of_measurement: str = UnitOfTime.SECONDS
     native_step: float = 1
     entity_category: EntityCategory = EntityCategory.CONFIG
 
@@ -351,12 +350,65 @@ mapping: dict[str, TuyaBLECategoryNumberMapping] = {
             ),
         },
     ),
+    "kg": TuyaBLECategoryNumberMapping(
+        products={
+            **dict.fromkeys(
+                [
+                    "mknd4lci",
+                    "riecov42"
+                ],  # Fingerbot Plus
+                [
+                    TuyaBLENumberMapping(
+                        dp_id=102,
+                        description=TuyaBLEDownPositionDescription(),
+                        is_available=is_fingerbot_not_in_program_mode,
+                    ),
+                    TuyaBLEHoldTimeMapping(dp_id=103),
+                    TuyaBLENumberMapping(
+                        dp_id=106,
+                        description=TuyaBLEUpPositionDescription(),
+                        is_available=is_fingerbot_not_in_program_mode,
+                    ),
+                    TuyaBLENumberMapping(
+                        dp_id=109,
+                        description=NumberEntityDescription(
+                            key="program_repeats_count",
+                            icon="mdi:repeat",
+                            native_max_value=0xFFFE,
+                            native_min_value=1,
+                            native_step=1,
+                            entity_category=EntityCategory.CONFIG,
+                        ),
+                        is_available=is_fingerbot_repeat_count_available,
+                        getter=get_fingerbot_program_repeat_count,
+                        setter=set_fingerbot_program_repeat_count,
+                    ),
+                    TuyaBLENumberMapping(
+                        dp_id=109,
+                        description=NumberEntityDescription(
+                            key="program_idle_position",
+                            icon="mdi:repeat",
+                            native_max_value=100,
+                            native_min_value=0,
+                            native_step=1,
+                            native_unit_of_measurement=PERCENTAGE,
+                            entity_category=EntityCategory.CONFIG,
+                        ),
+                        is_available=is_fingerbot_in_program_mode,
+                        getter=get_fingerbot_program_position,
+                        setter=set_fingerbot_program_position,
+                    ),
+                ],
+            ),
+        },
+    ),
     "wk": TuyaBLECategoryNumberMapping(
         products={
             **dict.fromkeys(
                 [
                     "drlajpqc",
                     "nhj2j7su",
+                    "zmachryv",
                 ],  # Thermostatic Radiator Valve
                 [
                     TuyaBLENumberMapping(
@@ -385,7 +437,7 @@ mapping: dict[str, TuyaBLECategoryNumberMapping] = {
                         icon="mdi:timer",
                         native_max_value=120,
                         native_min_value=1,
-                        native_unit_of_measurement=TIME_MINUTES,
+                        native_unit_of_measurement=UnitOfTime.MINUTES,
                         native_step=1,
                         entity_category=EntityCategory.CONFIG,
                     ),
@@ -404,7 +456,7 @@ mapping: dict[str, TuyaBLECategoryNumberMapping] = {
                         device_class=NumberDeviceClass.WATER,
                         native_max_value=5000,
                         native_min_value=0,
-                        native_unit_of_measurement=VOLUME_MILLILITERS,
+                        native_unit_of_measurement=UnitOfVolume.MILLILITERS,
                         native_step=1,
                         entity_category=EntityCategory.CONFIG,
                     ),
@@ -414,7 +466,7 @@ mapping: dict[str, TuyaBLECategoryNumberMapping] = {
     ),
     "ggq": TuyaBLECategoryNumberMapping(
         products={
-            "6pahkcau": [  # Irrigation computer
+            "6pahkcau": [  # Irrigation computer PARKSIDE PPB A1
                 TuyaBLENumberMapping(
                     dp_id=5,
                     description=NumberEntityDescription(
@@ -422,7 +474,33 @@ mapping: dict[str, TuyaBLECategoryNumberMapping] = {
                         icon="mdi:timer",
                         native_max_value=1440,
                         native_min_value=1,
-                        native_unit_of_measurement=TIME_MINUTES,
+                        native_unit_of_measurement=UnitOfTime.MINUTES,
+                        native_step=1,
+                    ),
+                ),
+            ],
+            "hfgdqhho": [  # Irrigation computer SGW08
+                TuyaBLENumberMapping(
+                    dp_id=106,
+                    description=NumberEntityDescription(
+                        key="countdown_duration_1",
+                        name="CH1 Countdown",
+                        icon="mdi:timer",
+                        native_max_value=1440,
+                        native_min_value=1,
+                        native_unit_of_measurement=UnitOfTime.MINUTES,
+                        native_step=1,
+                    ),
+                ),
+                TuyaBLENumberMapping(
+                    dp_id=103,
+                    description=NumberEntityDescription(
+                        key="countdown_duration_2",
+                        name="CH2 Countdown",
+                        icon="mdi:timer",
+                        native_max_value=1440,
+                        native_min_value=1,
+                        native_unit_of_measurement=UnitOfTime.MINUTES,
                         native_step=1,
                     ),
                 ),
@@ -432,27 +510,32 @@ mapping: dict[str, TuyaBLECategoryNumberMapping] = {
 }
 
 
-def get_mapping_by_device(device: TuyaBLEDevice) -> list[TuyaBLECategoryNumberMapping]:
+def get_mapping_by_device(device: TuyaBLEDevice) -> list[TuyaBLENumberMapping]:
     category = mapping.get(device.category)
+    result: list[TuyaBLENumberMapping] = []
     if category is not None and category.products is not None:
         product_mapping = category.products.get(device.product_id)
         if product_mapping is not None:
-            return product_mapping
-        if category.mapping is not None:
-            return category.mapping
-        else:
-            return []
-    else:
-        return []
+            result.extend(product_mapping)
+    if category is not None and category.mapping is not None:
+        result.extend(category.mapping)
+    return result
 
 
-class TuyaBLENumber(TuyaBLEEntity, NumberEntity):
+class TuyaBLENumber(TuyaBLEEntity):
     """Representation of a Tuya BLE Number."""
+
+    _attr_entity_category = None
+    _attr_native_min_value = None
+    _attr_native_max_value = None
+    _attr_native_step = None
+    _attr_native_unit_of_measurement = None
+    _attr_mode = None
 
     def __init__(
         self,
         hass: HomeAssistant,
-        coordinator: DataUpdateCoordinator,
+        coordinator: TuyaBLEPassiveCoordinator,
         device: TuyaBLEDevice,
         product: TuyaBLEProductInfo,
         mapping: TuyaBLENumberMapping,
@@ -460,22 +543,23 @@ class TuyaBLENumber(TuyaBLEEntity, NumberEntity):
         super().__init__(hass, coordinator, device, product, mapping.description)
         self._mapping = mapping
         self._attr_mode = mapping.mode
+        self._attr_native_min_value = mapping.description.native_min_value
+        self._attr_native_max_value = mapping.description.native_max_value
+        self._attr_native_step = mapping.description.native_step
+        self._attr_native_unit_of_measurement = mapping.description.native_unit_of_measurement
+        self._attr_entity_category = mapping.description.entity_category
 
     @property
     def native_value(self) -> float | None:
-        """Return the entity value to represent the entity state."""
-        if self._mapping.getter:
+        if self._mapping.getter is not None:
             return self._mapping.getter(self, self._product)
-
         datapoint = self._device.datapoints[self._mapping.dp_id]
-        if datapoint:
+        if datapoint and isinstance(datapoint.value, (int, float)):
             return datapoint.value / self._mapping.coefficient
-
         return self._mapping.description.native_min_value
 
-    def set_native_value(self, value: float) -> None:
-        """Set new value."""
-        if self._mapping.setter:
+    async def async_set_native_value(self, value: float) -> None:
+        if self._mapping.setter is not None:
             self._mapping.setter(self, self._product, value)
             return
         int_value = int(value * self._mapping.coefficient)
@@ -485,15 +569,10 @@ class TuyaBLENumber(TuyaBLEEntity, NumberEntity):
             int(int_value),
         )
         if datapoint:
-            self._hass.create_task(datapoint.set_value(int_value))
+            await datapoint.set_value(int_value)
 
-    @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        result = super().available
-        if result and self._mapping.is_available:
-            result = self._mapping.is_available(self, self._product)
-        return result
+    # Свойство available не определяется, используется только базовое
+    # ...existing code...
 
 
 async def async_setup_entry(
@@ -501,7 +580,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Tuya BLE sensors."""
+    """Set up the Tuya BLE numbers."""
     data: TuyaBLEData = hass.data[DOMAIN][entry.entry_id]
     mappings = get_mapping_by_device(data.device)
     entities: list[TuyaBLENumber] = []
